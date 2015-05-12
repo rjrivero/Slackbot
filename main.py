@@ -1,40 +1,80 @@
-import tornado.ioloop
-import tornado.web
-import tornado.escape
+# vim: tabstop=8 expandtab shiftwidth=4 softtabstop=4
 
-from tornado.options import define, options
+from tornado.ioloop import IOLoop
+from tornado.web import RequestHandler, Application, asynchronous
+from tornado.concurrent import Future
+from tornado.gen import chain_future
+from tornado.options import define, options, parse_command_line
 
-define("port", default=8888, help="run on the given port", type=int)
+# Importo los manejadores soportados.
+from plugins.simple import SimpleHandler
+from plugins.maps import MapHandler
 
+# Defino las opciones soportadas en linea de comandos
+define("port",    default=8888,       help="Run on the given port", type=int)
+define("botname", default="slackbot", help="Robot name",            type=str)
+define("webhook", default="",         help="Slack Webhook URL",     type=str)
 
-# Formato del POST recibido:
-#
-#token=bT1Oqy4c66ECzG5KNFFFGGjg
-#team_id=T0001
-#team_domain=example
-#channel_id=C2147483705
-#channel_name=test
-#timestamp=1355517523.000005
-#user_id=U2147483697
-#user_name=Steve
-#text=googlebot: What is the air-speed velocity of an unladen swallow?
-#trigger_word=googlebot:
+# Registro donde se almacenan los plugins soportados
+REGISTRY = dict()
 
-class MainHandler(tornado.web.RequestHandler):
+# Cargo el gestor de mensajes
+class MainHandler(RequestHandler):
 
-    def get(self):
-        self.write("Slackbot accepts only POST messages")
-
+    @asynchronous
     def post(self):
-        data = tornado.escape.json_decode(self.request_body)
-        print("data: %s" % str(data))
+        self._manage()
 
-application = tornado.web.Application([
+    def _commit(self, future):
+        """Callback que finaliza la peticion empezada por _manage"""
+        if future.exception():
+            self.write("*Error:* %s" % str(future.exception()))
+        else:
+            self.write(future.result())
+        self.finish()
+
+    def _manage(self, reg=REGISTRY):
+        # Almaceno los parametros del POST en un dict()
+        data    = dict((k, self.get_argument(k))
+                  for k in self.request.arguments.keys())
+        # Utilizo la primera palabra como orden
+        command = data['text'].strip().split()
+        head    = command.pop(0) if command else None
+        # Recupero el handler asociado a la orden
+        handler = reg.get(head, None) if head else None
+        future  = Future()
+        print("data: %s" % str(data))
+        if not handler:
+            # Si no hay orden, resuelvo el resultado inmediatamente
+            future.set_result(
+                "Lista de comandos soportados: %s" % ", ".join(reg.keys())
+            )
+        else:
+            # Si hay orden, la ejecuto y encadeno mi propio
+            # resultado al resultado de la orden
+            chain_future(handler(command, data), future)
+        # Cuando se resuelva la peticion, escribimos el resultado
+        IOLoop.current().add_future(future, self._commit)
+
+    @asynchronous
+    def get(self):
+        #self.write("Slackbot accepts only POST messages")
+        #simplify initial debug
+        self._manage()
+
+
+application = Application([
     (r"/", MainHandler),
+    (r"/slack", MainHandler),
 ])
 
 if __name__ == "__main__":
-    tornado.options.parse_command_line()
-    application.listen(options.port)
-    tornado.ioloop.IOLoop.instance().start()
 
+    # Registra los manejadores soportados
+    parse_command_line()
+    REGISTRY['ping'] = SimpleHandler('pong!')
+    REGISTRY['map']  = MapHandler(options.botname, options.webhook)
+
+    # Inicia la aplicacion
+    application.listen(options.port)
+    IOLoop.instance().start()
