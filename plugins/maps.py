@@ -78,7 +78,7 @@ class MapHandler(object):
         """Empuja a slack un mensaje con un mapa de google maps"""
 
         payload = MapCommand(command, data).payload()
-        payload['channel']    = data['channel_name']
+        payload['channel']    = u"#{0}".format(data['channel_name'])
         payload['username']   = self._botname
         payload['icon_emoji'] = u":earth_asia:"
 
